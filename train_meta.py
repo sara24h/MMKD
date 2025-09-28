@@ -7,7 +7,7 @@ from __future__ import print_function
 import os
 import re
 import argparse
-from symbol import test_nocond
+#from symbol import test_nocond
 import time
 import sys
 
