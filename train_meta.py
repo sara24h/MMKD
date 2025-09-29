@@ -7,7 +7,6 @@ from __future__ import print_function
 import os
 import re
 import argparse
-#from symbol import test_nocond
 import time
 import sys
 
@@ -18,10 +17,12 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 import torch.nn as nn
 import torch.backends.cudnn as cudnn
-#import tensorboard_logger as tb_logger
+# توجه: نیاز به نصب tensorboard_logger دارید
+import tensorboard_logger as tb_logger 
 
 
-from models import model_dict
+# اصلاح شده: model_dict از models وارد می شود
+from models import model_dict 
 from models.meta_util import LogitsWeight, MatchLogits, FeatureWeight, MatchFeature
 
 from dataset.buffer import HardBuffer
@@ -31,6 +32,7 @@ from helper.util import AverageMeter, accuracy, reduce_tensor, adjust_learning_r
 from helper.util import adjust_learning_rate_cifar, save_dict_to_json, reduce_tensor, LAYER, adjust_meta_learning_rate
 from helper.meta_optimizer import MetaSGD
 
+# فرض بر این است که FitNet.py و KD.py وجود دارند
 from distiller_zoo import DistillKL
 from setting import (cifar100_teacher_model_name, dogs_teacher_model_name, tinyimagenet_teacher_model_name, teacher_model_path_dict)
 
@@ -57,7 +59,7 @@ def parse_option():
     parser.add_argument('--weight_decay', type=float, default=5e-4, help='weight decay')
     parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
     parser.add_argument('--distill_decay', action='store_true', default=False,
-                        help='distillation decay')
+                         help='distillation decay')
 
     parser.add_argument('--meta_warmup', type=int, default=0, help='meta_warmup')
     parser.add_argument('--meta_freq', type=int, default=5, help='meta_freq')
@@ -73,11 +75,11 @@ def parse_option():
 
     # model
     parser.add_argument('--model_s', type=str, default='resnet8',
-                        choices=['resnet8', 'resnet14', 'resnet20', 'resnet32', 'resnet44', 'resnet56', 'resnet110',
-                                 'ResNet18', 'ResNet34', 'resnet8x4_double', 'MobileNetV2_Imagenet', 'ResNet18Double', 'ShuffleV2_Imagenet',
-                                 'resnet8x4', 'resnet32x4', 'resnet20x4', 'wrn_16_1', 'wrn_16_2', 'wrn_40_1', 'wrn_40_2', 'wrn_50_2',
-                                 'vgg8', 'vgg11', 'vgg13', 'vgg8_imagenet', 'vgg16', 'vgg19', 'ResNet50', 'ShuffleV2_0_5', 'ResNet10',
-                                 'MobileNetV2', 'ShuffleV1', 'ShuffleV2', 'shufflenet_v2_x0_5'])
+                         choices=['resnet8', 'resnet14', 'resnet20', 'resnet32', 'resnet44', 'resnet56', 'resnet110',
+                                  'ResNet18', 'ResNet34', 'resnet8x4_double', 'MobileNetV2_Imagenet', 'ResNet18Double', 'ShuffleV2_Imagenet',
+                                  'resnet8x4', 'resnet32x4', 'resnet20x4', 'wrn_16_1', 'wrn_16_2', 'wrn_40_1', 'wrn_40_2', 'wrn_50_2',
+                                  'vgg8', 'vgg11', 'vgg13', 'vgg8_imagenet', 'vgg16', 'vgg19', 'ResNet50', 'ShuffleV2_0_5', 'ResNet10',
+                                  'MobileNetV2', 'ShuffleV1', 'ShuffleV2', 'shufflenet_v2_x0_5'])
     parser.add_argument('--path-t', type=str, default=None, help='teacher model snapshot')
     parser.add_argument('--path-s', type=str, default=None, help='teacher model snapshot')
 
@@ -110,12 +112,12 @@ def parse_option():
     # switch for edge transformation
     parser.add_argument('--dali', type=str, choices=['cpu', 'gpu'], default=None)
     parser.add_argument('--multiprocessing-distributed', default=False, action='store_true',
-                    help='Use multi-processing distributed training to launch '
-                         'N processes per node, which has N GPUs. This is the '
-                         'fastest way to use PyTorch for either single node or '
-                         'multi node data parallel training')
+                         help='Use multi-processing distributed training to launch '
+                              'N processes per node, which has N GPUs. This is the '
+                              'fastest way to use PyTorch for either single node or '
+                              'multi node data parallel training')
     parser.add_argument('--dist-url', default='tcp://127.0.0.1:23451', type=str,
-                    help='url used to set up distributed training')
+                         help='url used to set up distributed training')
     parser.add_argument('--deterministic', action='store_true', help='Make results reproducible')
     parser.add_argument('--skip-validation', action='store_true', help='Skip validation of teacher')
 
@@ -137,17 +139,17 @@ def parse_option():
     if opt.dataset == 'cifar100':
         opt.teacher_model_name = cifar100_teacher_model_name
     elif opt.dataset == 'dogs':
-            opt.teacher_model_name = dogs_teacher_model_name
+        opt.teacher_model_name = dogs_teacher_model_name
     elif opt.dataset == 'tinyimagenet':
         opt.teacher_model_name = tinyimagenet_teacher_model_name
 
     opt.teacher_name_list = [name.split("-")[1]
-                for name in opt.teacher_model_name[:opt.teacher_num]]
+                 for name in opt.teacher_model_name[:opt.teacher_num]]
     opt.teacher_name_str = "_".join(list(set(opt.teacher_name_list)))
 
     model_name_template = split_symbol.join(['S', '{}_{}_{}_r', '{}_a', '{}_b', '{}_warmup_{}_freq_{}_rollback_{}_metalr_{}_{}'])
     opt.model_name = model_name_template.format(opt.model_s, opt.dataset, opt.distill, 
-                                                opt.gamma, opt.alpha, opt.beta, opt.meta_warmup, opt.meta_freq, opt.rollback, opt.meta_lr, opt.trial)
+                                                 opt.gamma, opt.alpha, opt.beta, opt.meta_warmup, opt.meta_freq, opt.rollback, opt.meta_lr, opt.trial)
 
 
     opt.model_name = opt.model_name + '_' + str(opt.teacher_num) + '_' + opt.teacher_name_str + "_" + opt.ensemble_method
@@ -166,10 +168,17 @@ def parse_option():
 
 def load_teacher(model_path, n_cls, model_t, opt=None):
     print('==> loading teacher model')
+    # model_dict قبلاً در train_meta.py وارد شده است
     model = model_dict[model_t](num_classes=n_cls)
-    # TODO: reduce size of the teacher saved in train_teacher.py
+    
     map_location = None if opt.gpu is None else {'cuda:0': 'cuda:%d' % (opt.gpu if opt.multiprocessing_distributed else 0)}
     model.load_state_dict(torch.load(model_path, map_location=map_location)['model'])
+    
+    # اعمال DataParallel برای استفاده از همه GPUها
+    if not opt.multiprocessing_distributed and opt.ngpus_per_node > 1:
+        model = torch.nn.DataParallel(model)
+        print(f"Teacher model {model_t} wrapped with DataParallel on {opt.ngpus_per_node} GPUs.")
+        
     print('==> done')
     return model
 
@@ -177,7 +186,7 @@ def load_teacher(model_path, n_cls, model_t, opt=None):
 def load_teacher_list(n_cls, opt):
     print('==> loading teacher model list')
     teacher_model_list = [load_teacher(teacher_model_path_dict[model_name], n_cls, model_t, opt)
-                          for (model_name, model_t) in zip(opt.teacher_model_name, opt.teacher_name_list)]
+                              for (model_name, model_t) in zip(opt.teacher_model_name, opt.teacher_name_list)]
     print('==> done')
     return teacher_model_list
 
@@ -204,31 +213,45 @@ def main():
     
     ngpus_per_node = torch.cuda.device_count()
     opt.ngpus_per_node = ngpus_per_node
-    if opt.multiprocessing_distributed:
+    
+    # اگر بیش از یک GPU برای DataParallel استفاده شود، multiprocessing-distributed را غیرفعال می کنیم
+    if ngpus_per_node > 1 and not opt.multiprocessing_distributed:
+        print(f"INFO: Detected {ngpus_per_node} GPUs. Will use DataParallel.")
+        opt.multiprocessing_distributed = False # فقط برای اطمینان
+        # در این حالت، ما فقط یک main_worker با gpu=None اجرا می کنیم
+        main_worker(None, ngpus_per_node, opt)
+        
+    elif opt.multiprocessing_distributed:
         # Since we have ngpus_per_node processes per node, the total world_size
-        # needs to be adjusted accordingly
         world_size = 1
         opt.world_size = ngpus_per_node * world_size
         # Use torch.multiprocessing.spawn to launch distributed processes: the
         # main_worker process function
         mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, opt))
     else:
+        # برای حالت تک-GPU
         main_worker(None if ngpus_per_node > 1 else opt.gpu_id, ngpus_per_node, opt)
 
 def main_worker(gpu, ngpus_per_node, opt):
     global best_acc, total_time
-    opt.gpu = int(gpu)
-    opt.gpu_id = int(gpu)
-
+    
+    # تنظیم GPU بر اساس حالت توزیع شده یا تک-GPU
+    if gpu is not None:
+        opt.gpu = int(gpu)
+        opt.gpu_id = int(gpu)
+    else: # برای حالت DataParallel یا تک-GPU ساده
+        opt.gpu = None 
+        
     if opt.gpu is not None:
         print("Use GPU: {} for training".format(opt.gpu))
+        torch.cuda.set_device(opt.gpu) # تنظیم دستگاه اصلی برای DDP
 
     if opt.multiprocessing_distributed:
         # Only one node now.
         opt.rank = gpu
         dist_backend = 'nccl'
         dist.init_process_group(backend=dist_backend, init_method=opt.dist_url,
-                                world_size=opt.world_size, rank=opt.rank)
+                                 world_size=opt.world_size, rank=opt.rank)
         opt.batch_size = int(opt.batch_size / ngpus_per_node)
         opt.num_workers = int((opt.num_workers + ngpus_per_node - 1) / ngpus_per_node)
 
@@ -255,6 +278,12 @@ def main_worker(gpu, ngpus_per_node, opt):
     module_args = {'num_classes': n_cls}
     model_s = model_dict[opt.model_s](**module_args)
     
+    # اعمال DataParallel برای مدل دانشجو اگر DataParallel استفاده می شود
+    if not opt.multiprocessing_distributed and opt.ngpus_per_node > 1:
+        model_s = torch.nn.DataParallel(model_s)
+        print(f"Student model wrapped with DataParallel on {opt.ngpus_per_node} GPUs.")
+        
+    
     if opt.dataset in ['cifar100', 'tinyimagenet']:
         data = torch.randn(2, 3, 32, 32)
     elif opt.dataset in ['imagenet', 'dogs', 'cub_200_2011', 'mit67']:
@@ -267,9 +296,21 @@ def main_worker(gpu, ngpus_per_node, opt):
     model_s.eval()
     for model_t in model_t_list:
         model_t.eval()
+    
+    # انتقال داده به GPU اصلی
+    if opt.gpu is not None:
+        data = data.cuda(opt.gpu)
+    elif opt.ngpus_per_node > 0: # برای DataParallel، به اولین GPU بفرستید
+        data = data.cuda(0) 
+
+    # استخراج ویژگی ها (Feature Extraction)
     for model_t in model_t_list:
         feat_t, _ = model_t(data, is_feat=True)
+        # در DataParallel، خروجی در GPU 0 است.
+        # اگر DataParallel استفاده می شود، باید خروجی را به GPU مورد نظر منتقل کنید.
+        feat_t = [f.to(data.device) for f in feat_t] 
         feat_t_list.append(feat_t)
+
     feat_s, _ = model_s(data, is_feat=True)
 
     module_list = nn.ModuleList([])
@@ -277,19 +318,29 @@ def main_worker(gpu, ngpus_per_node, opt):
     criterion_cls = nn.CrossEntropyLoss()
     criterion_div = DistillKL(opt.kd_T) 
     criterion_kd = DistillKL(opt.kd_T)
-    WeightLogits = LogitsWeight(n_feature=n_cls*(opt.teacher_num+1), teacher_num=opt.teacher_num).cuda()
-    t_n = [t_feat[-2].shape[1] for t_feat in feat_t_list]
+    n_feature = n_cls*(opt.teacher_num+1)
+    
+    # تعیین اندازه مناسب برای LogitsWeight
+    if opt.ngpus_per_node > 1 and not opt.multiprocessing_distributed:
+        # اگر از DataParallel استفاده شود، خروجی مدل (logit_s) در ابعاد batch_size*n_cls است.
+        # اما LogitsWeight باید بدون DataParallel تعریف و به GPU اصلی منتقل شود.
+        pass # بدون تغییر در n_feature
+        
+    WeightLogits = LogitsWeight(n_feature=n_feature, teacher_num=opt.teacher_num).cuda()
+    
+    t_n = [f[-2].shape[1] for f in feat_t_list] # استخراج ابعاد ویژگی از آخرین لایه
     WeightFeature = FeatureWeight(opt.batch_size, opt.teacher_num).cuda()
     weight_params = list(WeightLogits.parameters()) + list(WeightFeature.parameters())
     weight_optimizer = optim.Adam(weight_params, lr=opt.meta_lr, weight_decay=opt.meta_wd)
+    
     FeatureMatch = MatchFeature(opt.teacher_num, feat_s[-2].shape[1], t_n, convs=opt.convs).cuda()
 
     model_s_params = list(model_s.parameters()) + list(FeatureMatch.parameters())
     model_s_optimizer = MetaSGD(model_s_params,
-                        [model_s, FeatureMatch],
-                        lr=opt.learning_rate,
-                        momentum=opt.momentum,
-                        weight_decay=opt.weight_decay, nesterov=opt.nesterov, rollback=opt.rollback, cpu=False)
+                            [model_s, FeatureMatch],
+                            lr=opt.learning_rate,
+                            momentum=opt.momentum,
+                            weight_decay=opt.weight_decay, nesterov=opt.nesterov, rollback=opt.rollback, cpu=False)
     
 
     cur_epoch = 1
@@ -298,26 +349,33 @@ def main_worker(gpu, ngpus_per_node, opt):
         
 
     criterion_list = nn.ModuleList([])
-    criterion_list.append(criterion_cls)    # classification loss
-    criterion_list.append(criterion_div)    # KL divergence loss, original knowledge distillation
-    criterion_list.append(criterion_kd)     # other knowledge distillation loss
+    criterion_list.append(criterion_cls)     # classification loss
+    criterion_list.append(criterion_div)     # KL divergence loss, original knowledge distillation
+    criterion_list.append(criterion_kd)      # other knowledge distillation loss
     criterion_list.cuda()
 
     module_list.extend(model_t_list)
     module_list.cuda()
-    model_s.cuda()
+    
+    # model_s قبلاً در صورت DataParallel شدن، به GPU اصلی فرستاده شده است.
+    if not opt.multiprocessing_distributed and opt.ngpus_per_node <= 1:
+        model_s.cuda()
+
 
     # dataloader
     if opt.dataset == 'cifar100':
         train_loader, val_loader = get_cifar100_dataloaders(batch_size=opt.batch_size,
-                                                                       num_workers=opt.num_workers)
+                                                            num_workers=opt.num_workers)
     elif opt.dataset in ['dogs', 'cub_200_2011', 'mit67', 'tinyimagenet']:
-        train_loader, val_loader = get_finegrained_dataloaders(dataset=opt.dataset, batch_size=opt.batch_size, num_workers=opt.num_workers)                                                    
+        train_loader, val_loader = get_finegrained_dataloaders(dataset=opt.dataset, batch_size=opt.batch_size, num_workers=opt.num_workers)                             
     else:
         raise NotImplementedError(opt.dataset)
+        
+    # در صورت استفاده از DDP یا DataParallel، Sampler باید تنظیم شود (که در این کد وجود ندارد)
 
     if not opt.multiprocessing_distributed or opt.rank % ngpus_per_node == 0:
-        logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2)
+        # tb_logger باید نصب باشد
+        logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2) 
 
     if not opt.skip_validation:
         # validate teacher accuracy
@@ -348,22 +406,41 @@ def main_worker(gpu, ngpus_per_node, opt):
         input = input.float()
 
         if opt.gpu is not None:
-            input = input.cuda(opt.gpu if opt.multiprocessing_distributed else 0, non_blocking=True)
+            input = input.cuda(opt.gpu, non_blocking=True)
+        elif opt.ngpus_per_node > 0 and not opt.multiprocessing_distributed:
+            # برای DataParallel
+            input = input.cuda(0, non_blocking=True)
+            
         if torch.cuda.is_available():
-            target = target.cuda(opt.gpu if opt.multiprocessing_distributed else 0, non_blocking=True)
+            if opt.gpu is not None:
+                target = target.cuda(opt.gpu, non_blocking=True)
+            elif opt.ngpus_per_node > 0 and not opt.multiprocessing_distributed:
+                target = target.cuda(0, non_blocking=True)
+
 
         feat_s, logit_s = model_s(input, is_feat=True, preact=opt.preact)
+        
+        # اگر DataParallel باشد، خروجی ها یک Tuple هستند که باید unwrap شوند
+        if isinstance(logit_s, tuple):
+             logit_s = logit_s[0]
+
         feat_t_list = []
         logit_t_list = []
         with torch.no_grad():
             for model_t in model_t_list:
                 feat_t, logit_t = model_t(input, is_feat=True, preact=opt.preact)
-                feat_t = [f.detach() for f in feat_t]
+                if isinstance(logit_t, tuple):
+                    logit_t = logit_t[0]
+                
+                # انتقال داده به GPU اصلی برای محاسبات متا-لرنینگ
+                logit_t = logit_t.to(target.device) 
+                
+                feat_t = [f.to(target.device) for f in feat_t] 
                 feat_t_list.append(feat_t)
                 logit_t_list.append(logit_t.detach())
 
         loss_div_list = [criterion_div(logit_s, logit_t, is_ca=True)
-                            for logit_t in logit_t_list]
+                              for logit_t in logit_t_list]
         loss_div = torch.stack(loss_div_list, dim=1)
         logits_weight = WeightLogits(logit_t_list, logit_s.detach())
         loss_div = torch.mul(logits_weight, loss_div).sum(-1).mean()
@@ -381,7 +458,7 @@ def main_worker(gpu, ngpus_per_node, opt):
             return opt.alpha*loss_div+opt.beta*loss_kd
 
         loss_cls = criterion_cls(logit_s, target)
-        total_loss = loss_cls + loss_div + opt.beta*loss_kd
+        total_loss = loss_cls + opt.alpha*loss_div + opt.beta*loss_kd
         train_state['total_loss'] = total_loss.item()
 
         if opt.hard_buffer:
@@ -398,11 +475,22 @@ def main_worker(gpu, ngpus_per_node, opt):
         input = input.float()
 
         if opt.gpu is not None:
-            input = input.cuda(opt.gpu if opt.multiprocessing_distributed else 0, non_blocking=True)
+            input = input.cuda(opt.gpu, non_blocking=True)
+        elif opt.ngpus_per_node > 0 and not opt.multiprocessing_distributed:
+            input = input.cuda(0, non_blocking=True)
+            
         if torch.cuda.is_available():
-            target = target.cuda(opt.gpu if opt.multiprocessing_distributed else 0, non_blocking=True)
+            if opt.gpu is not None:
+                target = target.cuda(opt.gpu, non_blocking=True)
+            elif opt.ngpus_per_node > 0 and not opt.multiprocessing_distributed:
+                target = target.cuda(0, non_blocking=True)
 
         feat_s, logit_s = model_s(input, is_feat=True, preact=opt.preact)
+        
+        # اگر DataParallel باشد، خروجی ها یک Tuple هستند
+        if isinstance(logit_s, tuple):
+             logit_s = logit_s[0]
+             
         acc1, acc5 = accuracy(logit_s, target, topk=(1, 5))
         train_state['hard_acc1'] = acc1
         train_state['hard_acc5'] = acc5
@@ -451,12 +539,6 @@ def main_worker(gpu, ngpus_per_node, opt):
                 inner_objective(data).backward()
             model_s_optimizer.step(None)
 
-            # model_s_optimizer.zero_grad()
-            # weight_optimizer.zero_grad()
-            # inner_objective(data).backward()
-            # model_s_optimizer.step(None)
-            # weight_optimizer.step()
-
             losses.update(train_state['total_loss'], input.size(0))
             top1.update(train_state['acc1'][0], input.size(0))
             top5.update(train_state['acc5'][0], input.size(0))
@@ -465,25 +547,21 @@ def main_worker(gpu, ngpus_per_node, opt):
 
             if idx % opt.print_freq == 0:
                 print('Epoch: [{0}][{1}/{2}]\t'
-                  'GPU {3}\t'
-                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                  'Loss {loss.val:.4f} \t'
-                  'Acc@1 {top1.val:.3f} \t'
-                  'Acc@5 {top5.val:.3f} '.format(
-                      epoch, idx, n_batch, opt.gpu, batch_time=batch_time,
-                      data_time=data_time, loss=losses, top1=top1, top5=top5))
+                    'GPU {3}\t'
+                    'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                    'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                    'Loss {loss.val:.4f} \t'
+                    'Acc@1 {top1.val:.3f} \t'
+                    'Acc@5 {top5.val:.3f} '.format(
+                        epoch, idx, n_batch, opt.gpu, batch_time=batch_time,
+                        data_time=data_time, loss=losses, top1=top1, top5=top5))
                 sys.stdout.flush()
 
             # ===================train weight=====================
             if idx % opt.meta_freq == 0 or idx == n_batch - 1:
                 if opt.hard_buffer:
                     hard_data = hardBuffer.sample()
-                    # model_s_optimizer.zero_grad()
-                    # model_s_optimizer.step(outer_objective, (hard_data, hard_label))
-                    # hard_top1.update(train_state['hard_acc1'][0], input.size(0))
-                    # hard_top5.update(train_state['hard_acc5'][0], input.size(0))
-                    for j in range(2):               
+                    for j in range(2): 
                         model_s_optimizer.zero_grad()
                         model_s_optimizer.step(inner_objective, hard_data, matching_only=True)
                     
@@ -496,11 +574,7 @@ def main_worker(gpu, ngpus_per_node, opt):
                     model_s_optimizer.meta_backward()
                     weight_optimizer.step()
                 else:
-                    # model_s_optimizer.zero_grad()
-                    # model_s_optimizer.step(outer_objective, data)
-                    # hard_top1.update(train_state['hard_acc1'][0], input.size(0))
-                    # hard_top5.update(train_state['hard_acc5'][0], input.size(0))                
-                    for j in range(2):               
+                    for j in range(2): 
                         model_s_optimizer.zero_grad()
                         model_s_optimizer.step(inner_objective, data, matching_only=True)
 
@@ -522,7 +596,7 @@ def main_worker(gpu, ngpus_per_node, opt):
             logger.log_value('train_acc', train_acc, epoch)
             logger.log_value('train_loss', train_loss, epoch)
 
-        print('GPU %d validating' % (opt.gpu))
+        print('GPU %s validating' % (str(opt.gpu)))
         test_acc, test_acc_top5, test_loss = validate(val_loader, model_s, criterion_cls, opt)        
 
         if not opt.multiprocessing_distributed or opt.rank % ngpus_per_node == 0:
@@ -551,10 +625,10 @@ def main_worker(gpu, ngpus_per_node, opt):
                 else:
                     test_merics_teacher_acc = teacher_acc
                 test_merics = {'test_loss': test_loss,
-                                'test_acc': test_acc,
-                                'test_acc_top5': test_acc_top5,
-                                'teacher_acc': test_merics_teacher_acc,
-                                'epoch': epoch}
+                                 'test_acc': test_acc,
+                                 'test_acc_top5': test_acc_top5,
+                                 'teacher_acc': test_merics_teacher_acc,
+                                 'epoch': epoch}
                 
                 save_dict_to_json(test_merics, os.path.join(opt.save_folder, "test_best_metrics.json"))
                 print('saving the best model!')
