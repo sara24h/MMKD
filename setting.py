@@ -27,9 +27,9 @@ cifar100_student_model_name = [
 # ------------- teacher net --------------------#
 teacher_model_path_dict = {
 
-    'cifar100-vgg13-0': '../save/MultiT/teachers/models/vgg13_cifar100_lr_0.05_decay_0.0005_trial_1/vgg13_best.pth',
-    'cifar100-vgg13-1': '../save/MultiT/teachers/models/vgg13_cifar100_lr_0.05_decay_0.0005_trial_2/vgg13_best.pth',
-    'cifar100-vgg13-2': '../save/MultiT/teachers/models/vgg13_cifar100_lr_0.05_decay_0.0005_trial_4/vgg13_best.pth', 
+    'cifar100-vgg13-0': '/kaggle/input/kdfs-200k-pearsone-19-shahrivar-part1/results/run_resnet50_imagenet_prune1/student_model/resnet50_sparse_best.pt',
+    'cifar100-vgg13-1': '/kaggle/input/kdfs-10k-pearson-19-shahrivar-314-epochs/results/run_resnet50_imagenet_prune1/student_model/finetune_ResNet_50_sparse_best.pt',
+    'cifar100-vgg13-2': '/kaggle/input/10k-08-31-mordad-data/results/run_resnet50_imagenet_prune1/student_model/resnet50_sparse_best.pt', 
 }
 
 # ------------- student net --------------------#
