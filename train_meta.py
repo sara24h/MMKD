@@ -21,7 +21,7 @@ import torch.backends.cudnn as cudnn
 #import tensorboard_logger as tb_logger
 
 
-#from models import model_dict
+from models import model_dict
 from models.meta_util import LogitsWeight, MatchLogits, FeatureWeight, MatchFeature
 
 from dataset.buffer import HardBuffer
