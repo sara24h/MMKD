@@ -9,7 +9,6 @@ import re
 import argparse
 import time
 import sys
-
 import numpy
 import torch
 import torch.optim as optim
@@ -17,32 +16,27 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 import torch.nn as nn
 import torch.backends.cudnn as cudnn
-# توجه: نیاز به نصب tensorboard_logger دارید
-import tensorboard_logger as tb_logger 
+import tensorboard_logger as tb_logger
 
-
-# اصلاح شده: model_dict از models وارد می شود
-from models import model_dict 
+# فرض بر این است که این ماژول ها در دسترس هستند
+from models import model_dict
 from models.meta_util import LogitsWeight, MatchLogits, FeatureWeight, MatchFeature
-
 from dataset.buffer import HardBuffer
 from dataset.cifar100 import get_cifar100_dataloaders, get_cifar100_dataloaders_sample
 from dataset.finegrained import get_finegrained_dataloaders
 from helper.util import AverageMeter, accuracy, reduce_tensor, adjust_learning_rate, accuracy_list
 from helper.util import adjust_learning_rate_cifar, save_dict_to_json, reduce_tensor, LAYER, adjust_meta_learning_rate
 from helper.meta_optimizer import MetaSGD
-
-# فرض بر این است که FitNet.py و KD.py وجود دارند
 from distiller_zoo import DistillKL
+# فرض بر این است که setting.py وجود دارد
 from setting import (cifar100_teacher_model_name, dogs_teacher_model_name, tinyimagenet_teacher_model_name, teacher_model_path_dict)
-
 from helper.meta_loops import train_distill_multi_teacher as train, validate, validate_multi
 
 split_symbol = '~' if os.name == 'nt' else ':'
 
 
 def parse_option():
-
+    # ... (بدون تغییر)
     parser = argparse.ArgumentParser('argument for training')
     
     # basic
@@ -149,7 +143,7 @@ def parse_option():
 
     model_name_template = split_symbol.join(['S', '{}_{}_{}_r', '{}_a', '{}_b', '{}_warmup_{}_freq_{}_rollback_{}_metalr_{}_{}'])
     opt.model_name = model_name_template.format(opt.model_s, opt.dataset, opt.distill, 
-                                                 opt.gamma, opt.alpha, opt.beta, opt.meta_warmup, opt.meta_freq, opt.rollback, opt.meta_lr, opt.trial)
+                                                opt.gamma, opt.alpha, opt.beta, opt.meta_warmup, opt.meta_freq, opt.rollback, opt.meta_lr, opt.trial)
 
 
     opt.model_name = opt.model_name + '_' + str(opt.teacher_num) + '_' + opt.teacher_name_str + "_" + opt.ensemble_method
@@ -162,7 +156,7 @@ def parse_option():
     opt.save_folder = os.path.join(opt.model_path, opt.model_name)
     if not os.path.isdir(opt.save_folder):
         os.makedirs(opt.save_folder)
-    
+        
     return opt
 
 
@@ -209,16 +203,25 @@ def main():
     opt = parse_option()
     
     # ASSIGN CUDA_ID
+    # **مهم:** این خط تضمین می کند که فقط GPUهای مورد نظر برای PyTorch قابل مشاهده باشند.
     os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpu_id
     
     ngpus_per_node = torch.cuda.device_count()
     opt.ngpus_per_node = ngpus_per_node
     
+    # اگر GPU در دسترس نیست، یک اخطار نمایش دهید
+    if ngpus_per_node == 0 and not opt.multiprocessing_distributed:
+        print("WARNING: No GPU detected. Running on CPU may lead to issues or slowness.")
+        # برای ادامه کار در حالت CPU، opt.gpu_id را به None تنظیم می‌کنیم
+        opt.gpu_id = None
+        main_worker(None, ngpus_per_node, opt)
+        return # پایان کار main
+    
     # اگر بیش از یک GPU برای DataParallel استفاده شود، multiprocessing-distributed را غیرفعال می کنیم
     if ngpus_per_node > 1 and not opt.multiprocessing_distributed:
-        print(f"INFO: Detected {ngpus_per_node} GPUs. Will use DataParallel.")
+        print(f"INFO: Detected {ngpus_per_node} GPUs. Will use DataParallel (main_worker with gpu=None).")
         opt.multiprocessing_distributed = False # فقط برای اطمینان
-        # در این حالت، ما فقط یک main_worker با gpu=None اجرا می کنیم
+        # در این حالت، ما فقط یک main_worker با gpu=None اجرا می کنیم (که از DataParallel پشتیبانی می‌کند)
         main_worker(None, ngpus_per_node, opt)
         
     elif opt.multiprocessing_distributed:
@@ -229,26 +232,50 @@ def main():
         # main_worker process function
         mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, opt))
     else:
-        # برای حالت تک-GPU
-        main_worker(None if ngpus_per_node > 1 else opt.gpu_id, ngpus_per_node, opt)
+        # برای حالت تک-GPU (ngpus_per_node == 1)
+        # opt.gpu_id در اینجا یک رشته (مثلا '0') است که به main_worker ارسال می‌شود
+        main_worker(opt.gpu_id, ngpus_per_node, opt)
 
 def main_worker(gpu, ngpus_per_node, opt):
     global best_acc, total_time
     
     # تنظیم GPU بر اساس حالت توزیع شده یا تک-GPU
     if gpu is not None:
-        opt.gpu = int(gpu)
-        opt.gpu_id = int(gpu)
-    else: # برای حالت DataParallel یا تک-GPU ساده
+        try:
+            opt.gpu = int(gpu)
+            opt.gpu_id = int(gpu)
+        except ValueError:
+            # اگر gpu (که از opt.gpu_id آمده) قابل تبدیل به عدد نبود (مثلا اگر 'None' آمده باشد)
+            opt.gpu = None
+            
+    else: # برای حالت DataParallel یا تک-GPU ساده در CPU
         opt.gpu = None 
         
+    # === بلاک اصلی اصلاح‌شده برای حل خطای 'invalid device ordinal' ===
     if opt.gpu is not None:
-        print("Use GPU: {} for training".format(opt.gpu))
-        torch.cuda.set_device(opt.gpu) # تنظیم دستگاه اصلی برای DDP
+        # اطمینان حاصل می‌کنیم که شماره GPU در محدوده موجود است
+        if torch.cuda.is_available() and opt.gpu < torch.cuda.device_count():
+            print("Use GPU: {} for training".format(opt.gpu))
+            torch.cuda.set_device(opt.gpu) # تنظیم دستگاه اصلی برای DDP
+        else:
+            # اگر به طور توزیع شده اجرا نمی‌کنیم، باید بتوانیم به CPU برگردیم یا خطا دهیم
+            if opt.multiprocessing_distributed:
+                raise RuntimeError(f"DDP mode requires valid GPU index {opt.gpu}. Only {torch.cuda.device_count()} GPUs detected.")
+            else:
+                print(f"WARNING: Invalid GPU index {opt.gpu} requested. Only {torch.cuda.device_count()} GPUs detected. Falling back to CPU for single-process.")
+                opt.gpu = None # Fallback to CPU
+    
+    # اگر در حالت CPU باشیم، مطمئن می‌شویم که بقیه کد GPU را صدا نمی‌زند
+    if opt.gpu is None and torch.cuda.is_available():
+        # در DataParallel، اگر gpu=None باشد، انتظار می‌رود DataParallel مدل را به GPU بفرستد
+        # در DataParallel، opt.gpu در این مرحله None است
+        pass 
+    elif opt.gpu is None and not torch.cuda.is_available():
+        print("Running on CPU.")
 
     if opt.multiprocessing_distributed:
         # Only one node now.
-        opt.rank = gpu
+        opt.rank = opt.gpu # در DDP، rank همان gpu است
         dist_backend = 'nccl'
         dist.init_process_group(backend=dist_backend, init_method=opt.dist_url,
                                  world_size=opt.world_size, rank=opt.rank)
@@ -274,6 +301,7 @@ def main_worker(gpu, ngpus_per_node, opt):
     n_cls = class_num_map[opt.dataset]
 
     # model
+    # teacher ها را بارگذاری می‌کنیم. بارگذاری مدل‌ها و map_location در تابع load_teacher انجام می‌شود
     model_t_list = load_teacher_list(n_cls, opt)
     module_args = {'num_classes': n_cls}
     model_s = model_dict[opt.model_s](**module_args)
@@ -298,17 +326,18 @@ def main_worker(gpu, ngpus_per_node, opt):
         model_t.eval()
     
     # انتقال داده به GPU اصلی
-    if opt.gpu is not None:
-        data = data.cuda(opt.gpu)
-    elif opt.ngpus_per_node > 0: # برای DataParallel، به اولین GPU بفرستید
-        data = data.cuda(0) 
+    # از 'data.device' برای اطمینان از قرارگیری در دستگاه صحیح استفاده می‌کنیم
+    target_device = torch.device('cuda', opt.gpu) if opt.gpu is not None else (
+        torch.device('cuda', 0) if opt.ngpus_per_node > 0 and not opt.multiprocessing_distributed else torch.device('cpu')
+    )
+    data = data.to(target_device)
 
     # استخراج ویژگی ها (Feature Extraction)
     for model_t in model_t_list:
+        # مدل‌های معلم در load_teacher به DataParallel/GPU فرستاده شده‌اند
         feat_t, _ = model_t(data, is_feat=True)
-        # در DataParallel، خروجی در GPU 0 است.
-        # اگر DataParallel استفاده می شود، باید خروجی را به GPU مورد نظر منتقل کنید.
-        feat_t = [f.to(data.device) for f in feat_t] 
+        # اطمینان از اینکه خروجی‌ها در همان دستگاه داده (target_device) هستند
+        feat_t = [f.to(target_device) for f in feat_t] 
         feat_t_list.append(feat_t)
 
     feat_s, _ = model_s(data, is_feat=True)
@@ -320,27 +349,23 @@ def main_worker(gpu, ngpus_per_node, opt):
     criterion_kd = DistillKL(opt.kd_T)
     n_feature = n_cls*(opt.teacher_num+1)
     
-    # تعیین اندازه مناسب برای LogitsWeight
-    if opt.ngpus_per_node > 1 and not opt.multiprocessing_distributed:
-        # اگر از DataParallel استفاده شود، خروجی مدل (logit_s) در ابعاد batch_size*n_cls است.
-        # اما LogitsWeight باید بدون DataParallel تعریف و به GPU اصلی منتقل شود.
-        pass # بدون تغییر در n_feature
-        
-    WeightLogits = LogitsWeight(n_feature=n_feature, teacher_num=opt.teacher_num).cuda()
+    # انتقال متا-شبکه‌ها به دستگاه مورد نظر
+    WeightLogits = LogitsWeight(n_feature=n_feature, teacher_num=opt.teacher_num).to(target_device)
     
     t_n = [f[-2].shape[1] for f in feat_t_list] # استخراج ابعاد ویژگی از آخرین لایه
-    WeightFeature = FeatureWeight(opt.batch_size, opt.teacher_num).cuda()
+    WeightFeature = FeatureWeight(opt.batch_size, opt.teacher_num).to(target_device)
     weight_params = list(WeightLogits.parameters()) + list(WeightFeature.parameters())
     weight_optimizer = optim.Adam(weight_params, lr=opt.meta_lr, weight_decay=opt.meta_wd)
     
-    FeatureMatch = MatchFeature(opt.teacher_num, feat_s[-2].shape[1], t_n, convs=opt.convs).cuda()
+    FeatureMatch = MatchFeature(opt.teacher_num, feat_s[-2].shape[1], t_n, convs=opt.convs).to(target_device)
 
     model_s_params = list(model_s.parameters()) + list(FeatureMatch.parameters())
+    # ... (MetaSGD)
     model_s_optimizer = MetaSGD(model_s_params,
-                            [model_s, FeatureMatch],
-                            lr=opt.learning_rate,
-                            momentum=opt.momentum,
-                            weight_decay=opt.weight_decay, nesterov=opt.nesterov, rollback=opt.rollback, cpu=False)
+                                [model_s, FeatureMatch],
+                                lr=opt.learning_rate,
+                                momentum=opt.momentum,
+                                weight_decay=opt.weight_decay, nesterov=opt.nesterov, rollback=opt.rollback, cpu=target_device.type=='cpu')
     
 
     cur_epoch = 1
@@ -349,17 +374,19 @@ def main_worker(gpu, ngpus_per_node, opt):
         
 
     criterion_list = nn.ModuleList([])
-    criterion_list.append(criterion_cls)     # classification loss
-    criterion_list.append(criterion_div)     # KL divergence loss, original knowledge distillation
-    criterion_list.append(criterion_kd)      # other knowledge distillation loss
-    criterion_list.cuda()
+    criterion_list.append(criterion_cls)      # classification loss
+    criterion_list.append(criterion_div)      # KL divergence loss, original knowledge distillation
+    criterion_list.append(criterion_kd)       # other knowledge distillation loss
+    criterion_list.to(target_device) # انتقال معیارها به دستگاه
 
     module_list.extend(model_t_list)
-    module_list.cuda()
-    
+    # نیازی به انتقال مجدد module_list به GPU نیست، زیرا مدل‌های معلم در load_teacher منتقل شده‌اند.
+    # module_list.cuda() # این خط حذف/تغییر شده است
+
     # model_s قبلاً در صورت DataParallel شدن، به GPU اصلی فرستاده شده است.
-    if not opt.multiprocessing_distributed and opt.ngpus_per_node <= 1:
-        model_s.cuda()
+    # در غیر این صورت، آن را به target_device می‌فرستیم:
+    if not opt.multiprocessing_distributed and opt.ngpus_per_node <= 1 and opt.gpu is not None:
+        model_s.to(target_device)
 
 
     # dataloader
@@ -367,7 +394,7 @@ def main_worker(gpu, ngpus_per_node, opt):
         train_loader, val_loader = get_cifar100_dataloaders(batch_size=opt.batch_size,
                                                             num_workers=opt.num_workers)
     elif opt.dataset in ['dogs', 'cub_200_2011', 'mit67', 'tinyimagenet']:
-        train_loader, val_loader = get_finegrained_dataloaders(dataset=opt.dataset, batch_size=opt.batch_size, num_workers=opt.num_workers)                             
+        train_loader, val_loader = get_finegrained_dataloaders(dataset=opt.dataset, batch_size=opt.batch_size, num_workers=opt.num_workers)                
     else:
         raise NotImplementedError(opt.dataset)
         
@@ -375,7 +402,7 @@ def main_worker(gpu, ngpus_per_node, opt):
 
     if not opt.multiprocessing_distributed or opt.rank % ngpus_per_node == 0:
         # tb_logger باید نصب باشد
-        logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2) 
+        logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2)  
 
     if not opt.skip_validation:
         # validate teacher accuracy
@@ -405,19 +432,10 @@ def main_worker(gpu, ngpus_per_node, opt):
         input, target = data
         input = input.float()
 
-        if opt.gpu is not None:
-            input = input.cuda(opt.gpu, non_blocking=True)
-        elif opt.ngpus_per_node > 0 and not opt.multiprocessing_distributed:
-            # برای DataParallel
-            input = input.cuda(0, non_blocking=True)
+        # انتقال به دستگاه هدف
+        input = input.to(target_device, non_blocking=True)
+        target = target.to(target_device, non_blocking=True)
             
-        if torch.cuda.is_available():
-            if opt.gpu is not None:
-                target = target.cuda(opt.gpu, non_blocking=True)
-            elif opt.ngpus_per_node > 0 and not opt.multiprocessing_distributed:
-                target = target.cuda(0, non_blocking=True)
-
-
         feat_s, logit_s = model_s(input, is_feat=True, preact=opt.preact)
         
         # اگر DataParallel باشد، خروجی ها یک Tuple هستند که باید unwrap شوند
@@ -433,15 +451,16 @@ def main_worker(gpu, ngpus_per_node, opt):
                     logit_t = logit_t[0]
                 
                 # انتقال داده به GPU اصلی برای محاسبات متا-لرنینگ
-                logit_t = logit_t.to(target.device) 
+                logit_t = logit_t.to(target_device) 
                 
-                feat_t = [f.to(target.device) for f in feat_t] 
+                feat_t = [f.to(target_device) for f in feat_t] 
                 feat_t_list.append(feat_t)
                 logit_t_list.append(logit_t.detach())
 
         loss_div_list = [criterion_div(logit_s, logit_t, is_ca=True)
-                              for logit_t in logit_t_list]
+                             for logit_t in logit_t_list]
         loss_div = torch.stack(loss_div_list, dim=1)
+        # LogitsWeight و FeatureMatch در target_device هستند
         logits_weight = WeightLogits(logit_t_list, logit_s.detach())
         loss_div = torch.mul(logits_weight, loss_div).sum(-1).mean()
 
@@ -474,17 +493,10 @@ def main_worker(gpu, ngpus_per_node, opt):
         input, target = data
         input = input.float()
 
-        if opt.gpu is not None:
-            input = input.cuda(opt.gpu, non_blocking=True)
-        elif opt.ngpus_per_node > 0 and not opt.multiprocessing_distributed:
-            input = input.cuda(0, non_blocking=True)
+        # انتقال به دستگاه هدف
+        input = input.to(target_device, non_blocking=True)
+        target = target.to(target_device, non_blocking=True)
             
-        if torch.cuda.is_available():
-            if opt.gpu is not None:
-                target = target.cuda(opt.gpu, non_blocking=True)
-            elif opt.ngpus_per_node > 0 and not opt.multiprocessing_distributed:
-                target = target.cuda(0, non_blocking=True)
-
         feat_s, logit_s = model_s(input, is_feat=True, preact=opt.preact)
         
         # اگر DataParallel باشد، خروجی ها یک Tuple هستند
@@ -547,14 +559,14 @@ def main_worker(gpu, ngpus_per_node, opt):
 
             if idx % opt.print_freq == 0:
                 print('Epoch: [{0}][{1}/{2}]\t'
-                    'GPU {3}\t'
-                    'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                    'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                    'Loss {loss.val:.4f} \t'
-                    'Acc@1 {top1.val:.3f} \t'
-                    'Acc@5 {top5.val:.3f} '.format(
-                        epoch, idx, n_batch, opt.gpu, batch_time=batch_time,
-                        data_time=data_time, loss=losses, top1=top1, top5=top5))
+                      'GPU {3}\t'
+                      'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                      'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                      'Loss {loss.val:.4f} \t'
+                      'Acc@1 {top1.val:.3f} \t'
+                      'Acc@5 {top5.val:.3f} '.format(
+                          epoch, idx, n_batch, opt.gpu, batch_time=batch_time,
+                          data_time=data_time, loss=losses, top1=top1, top5=top5))
                 sys.stdout.flush()
 
             # ===================train weight=====================
@@ -597,7 +609,8 @@ def main_worker(gpu, ngpus_per_node, opt):
             logger.log_value('train_loss', train_loss, epoch)
 
         print('GPU %s validating' % (str(opt.gpu)))
-        test_acc, test_acc_top5, test_loss = validate(val_loader, model_s, criterion_cls, opt)        
+        # validate نیز باید از target_device استفاده کند
+        test_acc, test_acc_top5, test_loss = validate(val_loader, model_s, criterion_cls, opt)       
 
         if not opt.multiprocessing_distributed or opt.rank % ngpus_per_node == 0:
             print(' ** Acc@1 {:.3f}, Acc@5 {:.3f}'.format(test_acc, test_acc_top5))
@@ -625,10 +638,10 @@ def main_worker(gpu, ngpus_per_node, opt):
                 else:
                     test_merics_teacher_acc = teacher_acc
                 test_merics = {'test_loss': test_loss,
-                                 'test_acc': test_acc,
-                                 'test_acc_top5': test_acc_top5,
-                                 'teacher_acc': test_merics_teacher_acc,
-                                 'epoch': epoch}
+                                     'test_acc': test_acc,
+                                     'test_acc_top5': test_acc_top5,
+                                     'teacher_acc': test_merics_teacher_acc,
+                                     'epoch': epoch}
                 
                 save_dict_to_json(test_merics, os.path.join(opt.save_folder, "test_best_metrics.json"))
                 print('saving the best model!')
